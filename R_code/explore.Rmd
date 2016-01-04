@@ -1,0 +1,213 @@
+---
+title: "explore"
+output: html_document
+---
+
+```{r libraries}
+library(dplyr)
+library(ggplot2)
+library(zoo)
+library(Metrics)
+```
+
+Create dataframe for:
+*gamelogs
+*players
+```{r load_data}
+setwd('~/fantasy_sports/nba/raw_data')
+temp <- list.files(pattern = '*.csv')
+data_list <- lapply(temp, read.csv, stringsAsFactors = F)
+data <- do.call('rbind', data_list)
+rm(temp, data_list)
+setwd('~/fantasy_sports/nba/R_code')
+
+names <- data %>%
+  dplyr::select(
+    player_id,
+    player_name
+  ) %>%
+  unique()
+```
+
+```{r ppm history}
+ppm <- data %>% 
+  dplyr::group_by(
+    season_id,
+    player_id
+  ) %>% 
+  dplyr::summarise(
+    ppm = mean(dk_pts) / mean(min)
+  ) %>% 
+  dplyr::left_join(
+    y = names,
+    by = 'player_id'
+  ) %>%
+  dplyr::arrange(
+    -ppm
+  )
+```
+
+```{r cats_def}
+catsdef_game <- data %>%
+  dplyr::group_by(
+    season_id,
+    opp,
+    game_date,
+    game_id
+  ) %>%
+  dplyr::summarise_each(
+    funs(sum),
+    pts,
+    fg3m,
+    reb,
+    ast,
+    stl,
+    blk,
+    tov
+  )
+
+catsdef_season <- catsdef_game %>%
+  dplyr::group_by(
+    season_id,
+    opp
+  ) %>%
+    dplyr::summarise_each(
+    funs(mean),
+    pts,
+    fg3m,
+    reb,
+    ast,
+    stl,
+    blk,
+    tov
+  )
+
+league_avg <- catsdef_season %>%
+  dplyr::group_by(
+    season_id
+  ) %>%
+    dplyr::summarise_each(
+    funs(mean),
+    pts,
+    fg3m,
+    reb,
+    ast,
+    stl,
+    blk,
+    tov
+  )
+```
+
+How consistent is a team's defensive performance over the course of the season when using different rolling window sizes?
+
+```{r window function}
+roll_n <- function(data, size) {
+  rolled <- apply(
+    data[, 5:11],
+    2,
+    zoo::rollmean,
+    k = size
+  ) %>%
+    as.data.frame()
+  
+  df <- apply(rolled, 2, round, digits = 2) %>% as.data.frame()
+  df$opp <- data$opp[1]
+  df$season_id <- data$season_id[1]
+  df$g <- size:(nrow(df)+(size-1))
+  
+  means <- apply(data[5:11], 2, function(x) round(mean(x), digits = 2))
+  stats <- names(data)[5:11]
+  for (stat in stats) {
+    df[, paste0(stat, '_avg')] <- means[match(stat, stats)]
+  }
+  
+  return(df)
+}
+```
+
+```{r def plotter}
+plotter <- function(df, stat) {
+  avg <- df[1, paste0(stat, '_avg')] %>% as.numeric()
+  g <- ggplot(df) +
+    geom_point(
+      aes_string(
+        x = names(df)[match('g',names(df))],
+        y = names(df)[match(stat, names(df))]
+      )
+    ) +
+    geom_line(
+      aes_string(
+        x = names(df)[match('g',names(df))],
+        y = names(df)[match(stat, names(df))]
+      )
+    ) +
+    geom_hline(
+      yintercept = avg
+    ) +
+    ggtitle(
+      paste(df$season_id[1], df$opp[1], stat, sep = '_')
+    ) +
+    xlab('game')
+    ylab(stat)
+  
+  print(g)
+}
+```
+
+```{r rmse table}
+rmse_table <- . %>%
+  dplyr::group_by(
+    season_id
+  ) %>%
+  dplyr::summarise(
+    pts_rmse = Metrics::rmse(pts, pts_avg),
+    fg3m_rmse = Metrics::rmse(fg3m, fg3m_avg),
+    reb_rmse = Metrics::rmse(reb, reb_avg),
+    ast_rmse = Metrics::rmse(ast, ast_avg),
+    stl_rmse = Metrics::rmse(stl, stl_avg),
+    blk_rmse = Metrics::rmse(stl, blk_avg),
+    tov_rmse = Metrics::rmse(tov, tov_avg)
+  ) %>% 
+  dplyr::summarise_each(
+    funs(mean),
+    -season_id
+  )
+```
+
+```{r create def w/ window}
+season_opp_grouper <- . %>%
+  dplyr::group_by(
+    season_id,
+    opp
+  )
+
+def5 <- catsdef_game %>%
+  season_opp_grouper() %>%
+  dplyr::do(roll_n(., 5))
+
+def7 <- catsdef_game %>%
+  season_opp_grouper() %>%
+  dplyr::do(roll_n(., 7))
+
+def10 <- catsdef_game %>%
+  season_opp_grouper() %>%
+  dplyr::do(roll_n(., 10))
+```
+
+```{r view summary}
+View(
+  def5 %>%
+    rmse_table()
+)
+
+View(
+  def7 %>%
+    rmse_table()
+)
+
+View(
+  def10 %>%
+    rmse_table()
+)
+```
+
