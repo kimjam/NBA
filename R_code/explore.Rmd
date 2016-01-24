@@ -13,6 +13,7 @@ library(Metrics)
 Create dataframe for:
 *gamelogs
 *players
+*games
 ```{r load_data}
 setwd('~/fantasy_sports/nba/raw_data')
 temp <- list.files(pattern = '*.csv')
@@ -25,6 +26,15 @@ names <- data %>%
   dplyr::select(
     player_id,
     player_name
+  ) %>%
+  unique()
+
+games <- data %>%
+  dplyr::select(
+    season_id,
+    game_id,
+    team,
+    opp
   ) %>%
   unique()
 ```
@@ -95,6 +105,34 @@ league_avg <- catsdef_season %>%
     stl,
     blk,
     tov
+  )
+
+names(league_avg)[2:length(league_avg)] <- paste0('lgavg_', names(league_avg)[2:length(league_avg)])
+
+catsdef_season_adj <- catsdef_season %>%
+  dplyr::left_join(
+    y = league_avg,
+    by = 'season_id'
+  ) %>%
+  dplyr::mutate(
+    adj_pts = pts / lgavg_pts,
+    adj_fg3m = fg3m / lgavg_fg3m,
+    adj_reb = reb / lgavg_reb,
+    adj_ast = ast / lgavg_ast,
+    adj_stl = stl / lgavg_stl,
+    adj_blk = blk / lgavg_blk,
+    adj_tov = tov / lgavg_tov
+  ) %>%
+  dplyr::select(
+    season_id,
+    opp,
+    adj_pts,
+    adj_fg3m,
+    adj_reb,
+    adj_ast,
+    adj_stl,
+    adj_blk,
+    adj_tov
   )
 ```
 
@@ -211,3 +249,94 @@ View(
 )
 ```
 
+Assume a player's season average is player's "true" ability level. See if adjusting by opponents rates come close to predicting next game production.
+
+```{r player averages}
+rounded_avg <- function(x) {
+  return(round(mean(x), digits = 1))
+}
+
+player_avg <- data %>%
+  dplyr::select(
+    season_id,
+    player_id,
+    min,
+    pts,
+    fg3m,
+    reb,
+    ast,
+    stl,
+    blk,
+    tov,
+    dub_dub,
+    trip_dub,
+    dk_pts
+  ) %>%
+  dplyr::group_by(
+    season_id,
+    player_id
+  ) %>%
+  dplyr::summarise_each(
+    .,
+    funs = funs(rounded_avg)
+  ) %>%
+  dplyr::mutate(
+    avg_dkpts = dk_pts
+  ) %>%
+  dplyr::select(
+    -dk_pts
+  )
+```
+
+```{r create dataset}
+adjusted <- data %>%
+  dplyr::select(
+    season_id,
+    player_id,
+    player_name,
+    game_id,
+    team,
+    opp,
+    dk_pts
+  ) %>%
+  dplyr::mutate(
+    actual_pts = dk_pts
+  ) %>%
+  dplyr::left_join(
+    y = player_avg,
+    by = c('season_id', 'player_id')
+  ) %>%
+  dplyr::left_join(
+    y = catsdef_season_adj,
+    by = c('season_id', 'opp')
+  ) %>%
+  dplyr::mutate(
+    pred_pts = (
+      pts * adj_pts + fg3m * adj_fg3m + 1.25 * ast * adj_ast + 
+        .5 * reb * adj_reb + 2 * stl * adj_stl + 2 * blk * adj_blk - 
+        .5 * tov * adj_tov + 1.5 * dub_dub + 3 * trip_dub
+    )
+  ) %>%
+  dplyr::select(
+    season_id,
+    player_id,
+    player_name,
+    game_id,
+    team,
+    opp,
+    dk_pts,
+    avg_dkpts,
+    pred_pts
+  )
+```
+
+```{r adjusted plot}
+avg_plot <- ggplot(adjusted, aes(x = pred_pts, y = dk_pts)) + 
+  geom_point() + 
+  geom_abline(slope = 1, intercept = 0, color = 'red')
+```
+
+RMSE using season average as "true" ability and adjusting by opponent's defense:
+`r mean(sqrt((adjusted$dk_pts - adjusted$pred_pts)^2))` fantasy points.
+
+Next, break down stats to per minute level and adjust.
